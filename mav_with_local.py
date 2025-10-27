@@ -1,115 +1,182 @@
-#!/usr/bin/env python3
-import asyncio
-from mavsdk import System
-from mavsdk.action import ActionError
-from mavsdk.offboard import (OffboardError, PositionNedYaw)
+#!/usr/-bin/env python
+# -*- coding: utf-8 -*-
 
-# --- Ваши точки (X=вперед, Y=влево) ---
-points_dict = {
-    'Н': (0.0, 0.0),
-    'А': (2.5, 1.0),
-    'В': (6.5, 1.0),
-    '1': (0.5, 3.0),
-    '2': (7.5, 9.0),
-    '3': (0.5, 8.0),
-    '4': (7.5, 4.5),
-    '5': (4.5, 5.5)
-}
+import rospy
+from geometry_msgs.msg import PoseStamped
+from mavros_msgs.srv import CommandBool, SetMode, CommandTOL
+from mavros_msgs.msg import State
+import math
 
-# --- Ваш новый маршрут ---
-# (Точка 'Н' - это старт, поэтому мы ее не включаем в список целей)
-route_keys = ['1', 'В', '5', 'В', '2', 'В', '4', 'А', '3', 'А']
+# ПРЕДПОЛАГАЕТСЯ, что сервис для светодиодов - это стандартный SetBool
+# Замените 'set_led' на имя реального сервиса из документации олимпиады
+from std_srvs.srv import SetBool 
 
-# --- Настройки полета ---
-FLYING_ALTITUDE = 5.0 # (метры) - высота полета
+class DroneController:
+    def __init__(self):
+        rospy.init_node('fly_robotics_controller')
 
-# 1. Собираем список координат (X, Y, Z) для Gazebo
-gazebo_points = []
-for key in route_keys:
-    point_xy = points_dict.get(key)
-    if point_xy:
-        gazebo_points.append((point_xy[0], point_xy[1], FLYING_ALTITUDE))
-
-# 2. Конвертируем Gazebo (X, Y, Z) в MAVSDK NED (North, East, Down)
-# N = X, E = -Y, D = -Z
-ned_points = [
-    PositionNedYaw(p[0], -p[1], -p[2], 0.0) for p in gazebo_points
-]
-
-
-async def run_mission():
-    """
-    Выполняет полет по точкам в режиме Offboard.
-    """
-    drone = System()
-    await drone.connect(system_address="udp://:14540")
-
-    print("Ждем подключения к дрону...")
-    async for state in drone.core.connection_state():
-        if state.is_connected:
-            print(f"Дрон подключен!")
-            break
-
-    print("Ждем получения GPS... (нужно для arm)")
-    async for health in drone.telemetry.health():
-        if health.is_global_position_ok and health.is_home_position_ok:
-            print("Позиция GPS установлена.")
-            break
-    
-    # --- ВАЖНО: ПРОВЕРКА ОШИБОК ARM ---
-    print("-- Арминг (взвод моторов)")
-    try:
-        await drone.action.arm()
-    except ActionError as e:
-        print(f"!!! ОШИБКА ARM: {e}")
-        print("!!! Завершение скрипта.")
-        return # Выходим из миссии
-
-    await asyncio.sleep(1) 
-    target_altitude_ned = ned_points[0].down_m # Берем высоту из первой точки
-
-    # --- ВАЖНО: ПРОВЕРКА ОШИБОК TAKEOFF ---
-    print(f"-- Взлет на {-target_altitude_ned} м")
-    try:
-        await drone.action.set_takeoff_altitude(-target_altitude_ned)
-        await drone.action.takeoff()
-    except ActionError as e:
-        print(f"!!! ОШИБКА TAKEOFF: {e}")
-        print("!!! Завершение скрипта.")
-        return # Выходим из миссии
-
-    # Даем дрону время набрать высоту
-    await asyncio.sleep(10) 
-
-    print("-- Запуск режима Offboard")
-    try:
-        await drone.offboard.set_position_ned(PositionNedYaw(0.0, 0.0, target_altitude_ned, 0.0))
-        await drone.offboard.start()
-    except OffboardError as error:
-        print(f"Не удалось запустить Offboard: {error}")
-        await drone.action.land()
-        return
-
-    # --- Начинаем полет по точкам ---
-    for i, point in enumerate(ned_points):
-        print(f"-- Летим в точку {i+1}/{len(ned_points)} (Маршрут: {route_keys[i]})")
-        print(f"   Координаты: N:{point.north_m} E:{point.east_m} D:{point.down_m}")
+        # --- 1. Координаты и маршрут (из вашего запроса) ---
+        self.coordinates = {
+            '0': (0.0, 0.0, 1.0),  # H (База) - всегда на Z=1 для полета
+            'A': (2.5, 1.0, 1.0),
+            'B': (6.5, 1.0, 1.0),
+            '1': (0.5, 3.0, 1.0),
+            '2': (7.5, 9.0, 1.0),
+            '3': (0.5, 8.0, 1.0),
+            '4': (7.5, 4.5, 1.0),
+            '5': (4.5, 5.5, 1.0)
+        }
         
-        await drone.offboard.set_position_ned(point)
+        # Исправленный, корректный маршрут
+        self.route_plan = ['B', '1', 'B', '5', 'B', '2', 'A', '4', 'A', '3']
         
-        # Ждем 4 секунды. Это МЕНЬШЕ 5-секундного таймаута Offboard.
-        # Дрон может не успеть долететь до точки, но он будет 
-        # непрерывно двигаться к СЛЕДУЮЩЕЙ точке.
-        await asyncio.sleep(4) 
+        self.pickup_points = ['A', 'B']
+        self.dropoff_points = ['1', '2', '3', '4', '5']
+        
+        # --- 2. Настройка ROS ---
+        self.current_state = None
+        self.current_pose = None
+        self.rate = rospy.Rate(20.0)
 
-    print("-- Миссия завершена, остановка Offboard")
+        # Подписчики
+        rospy.Subscriber('/mavros/state', State, self.state_callback)
+        rospy.Subscriber('/mavros/local_position/pose', PoseStamped, self.pose_callback)
+
+        # Публикаторы
+        self.setpoint_pub = rospy.Publisher('/mavros/setpoint_position/local', PoseStamped, queue_size=10)
+
+        # Клиенты сервисов
+        rospy.wait_for_service('/mavros/cmd/arming')
+        self.arm_service = rospy.ServiceProxy('/mavros/cmd/arming', CommandBool)
+        
+        rospy.wait_for_service('/mavros/set_mode')
+        self.set_mode_service = rospy.ServiceProxy('/mavros/set_mode', SetMode)
+
+        rospy.wait_for_service('/mavros/cmd/land')
+        self.land_service = rospy.ServiceProxy('/mavros/cmd/land', CommandTOL)
+
+        # Сервис светодиодов (!! ЗАМЕНИТЬ НА РЕАЛЬНЫЙ СЕРВИС !!)
+        try:
+            rospy.wait_for_service('set_led', timeout=2.0)
+            self.set_led_service = rospy.ServiceProxy('set_led', SetBool)
+        except rospy.ROSException:
+            rospy.logwarn("Сервис 'set_led' не найден. Имитация работы.")
+            self.set_led_service = None
+
+        # --- 3. Подготовка к полету ---
+        self.prepare_flight()
+
+    def state_callback(self, msg):
+        self.current_state = msg
+
+    def pose_callback(self, msg):
+        self.current_pose = msg
+
+    def set_led(self, state):
+        """Управляет светодиодной лентой."""
+        if self.set_led_service is None:
+            rospy.loginfo(f"[ИМИТАЦИЯ] LED: {'ЗЕЛЕНЫЙ' if state else 'ВЫКЛ'}")
+            return
+            
+        try:
+            # True = зеленый [cite: 23], False = выкл [cite: 25]
+            self.set_led_service(state) 
+        except rospy.ServiceException as e:
+            rospy.logerr(f"Ошибка вызова сервиса LED: {e}")
+
+    def is_at_position(self, target_coords, tolerance=0.3):
+        """Проверяет, достиг ли дрон цели с допуском."""
+        if self.current_pose is None:
+            return False
+        
+        pos = self.current_pose.pose.position
+        dist = math.sqrt(
+            (pos.x - target_coords[0])**2 +
+            (pos.y - target_coords[1])**2 +
+            (pos.z - target_coords[2])**2
+        )
+        return dist < tolerance
+
+    def go_to_point(self, point_name):
+        """Летит к точке и ждет ее достижения."""
+        target_coords = self.coordinates[point_name]
+        pose = PoseStamped()
+        pose.header.stamp = rospy.Time.now()
+        pose.pose.position.x = target_coords[0]
+        pose.pose.position.y = target_coords[1]
+        pose.pose.position.z = target_coords[2]
+        
+        rospy.loginfo(f"Движение к {point_name} {target_coords}...")
+        
+        while not self.is_at_position(target_coords) and not rospy.is_shutdown():
+            if (self.current_state and self.current_state.mode != "OFFBOARD"):
+                rospy.logwarn("Режим OFFBOARD потерян! Попытка восстановления...")
+                self.set_mode_service(custom_mode="OFFBOARD")
+                
+            self.setpoint_pub.publish(pose)
+            self.rate.sleep()
+        
+        rospy.loginfo(f"Прибытие в {point_name}.")
+
+    def prepare_flight(self):
+        """Взлет и переход в OFFBOARD."""
+        rospy.loginfo("Подготовка к полету...")
+        
+        # Ждем подключения к FCU
+        while not self.current_state and not rospy.is_shutdown():
+            self.rate.sleep()
+            
+        # Отправляем несколько setpoints перед переключением режима
+        pose = PoseStamped()
+        pose.pose.position.z = 1.0 # Стартовая высота [cite: 19]
+        for _ in range(100):
+            self.setpoint_pub.publish(pose)
+            self.rate.sleep()
+            
+        # Включаем OFFBOARD и Arm
+        self.set_mode_service(custom_mode="OFFBOARD")
+        self.arm_service(True)
+        
+        # Ждем стабилизации на (0,0,1)
+        self.go_to_point('0')
+        rospy.loginfo("Готов к миссии. (Время отсчета пошло) [cite: 19]")
+
+    def run_mission(self):
+        """Выполняет полет по заданному маршруту."""
+        
+        for point_name in self.route_plan:
+            # Летим к следующей точке
+            self.go_to_point(point_name)
+            
+            # Выполняем действие в точке
+            if point_name in self.pickup_points:
+                # "Захват" 
+                rospy.loginfo(f"Захват груза в {point_name}...")
+                self.set_led(True) # Включить зеленый [cite: 23]
+                rospy.sleep(3.0) # Зависание 3 сек 
+            
+            elif point_name in self.dropoff_points:
+                # "Разгрузка" 
+                rospy.loginfo(f"Разгрузка груза в {point_name}...")
+                self.set_led(False) # Выключить [cite: 25]
+                rospy.sleep(3.0) # Зависание 3 сек 
+        
+        # --- 4. Завершение миссии ---
+        rospy.loginfo("Миссия выполнена. Возвращение на базу...")
+        self.go_to_point('0') # Возврат в (0,0,1) [cite: 20]
+        
+        rospy.loginfo("Стабилизация на базе... (Окончание времени) [cite: 21]")
+        # (Можно добавить проверку стабилизации скоростей)
+        
+        rospy.loginfo("Выполнение посадки...")
+        self.land_service(altitude=0, latitude=0, longitude=0, min_pitch=0) # Посадка в (0,0,0) [cite: 22]
+        rospy.sleep(5) # Даем время на посадку
+        rospy.loginfo("Миссия завершена.")
+
+
+if __name__ == '__main__':
     try:
-        await drone.offboard.stop()
-    except OffboardError as error:
-        print(f"Не удалось остановить Offboard: {error}")
-
-    print("-- Посадка")
-    await drone.action.land()
-
-if __name__ == "__main__":
-    asyncio.run(run_mission())
+        controller = DroneController()
+        controller.run_mission()
+    except rospy.ROSInterruptException:
+        pass
