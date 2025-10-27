@@ -11,9 +11,9 @@ class DroneController:
     def __init__(self):
         rospy.init_node('fly_robotics_mvp_controller')
 
-        # --- 1. Координаты и маршрут (из нашего обсуждения) ---
+        # --- 1. Coordinates and Route (from our discussion) ---
         self.coordinates = {
-            '0': (0.0, 0.0, 1.0),  # H (База) - рабочая высота 1м 
+            '0': (0.0, 0.0, 1.0),  # H (Base) - working altitude 1m
             'A': (2.5, 1.0, 1.0),
             'B': (6.5, 1.0, 1.0),
             '1': (0.5, 3.0, 1.0),
@@ -23,32 +23,32 @@ class DroneController:
             '5': (4.5, 5.5, 1.0)
         }
         
-        # Корректный маршрут, выполняющий все 5 доставок [cite: 49, 50]
+        # Correct route, performs all 5 deliveries
         self.route_plan = [
-            'B', '1',  # Доставка 1 (B -> 1)
-            'B', '5',  # Доставка 2 (B -> 5)
-            'B', '2',  # Доставка 3 (B -> 2)
-            'A', '4',  # Доставка 4 (A -> 4)
-            'A', '3'   # Доставка 5 (A -> 3)
+            'B', '1',  # Delivery 1 (B -> 1)
+            'B', '5',  # Delivery 2 (B -> 5)
+            'B', '2',  # Delivery 3 (B -> 2)
+            'A', '4',  # Delivery 4 (A -> 4)
+            'A', '3'   # Delivery 5 (A -> 3)
         ]
         
         self.pickup_points = ['A', 'B']
         self.dropoff_points = ['1', '2', '3', '4', '5']
         
-        # --- 2. Настройка ROS ---
+        # --- 2. ROS Setup ---
         self.current_state = None
         self.current_pose = None
-        self.rate = rospy.Rate(20.0) # 20 Гц для MAVROS
+        self.rate = rospy.Rate(20.0) # 20 Hz for MAVROS
 
-        # Подписчики
+        # Subscribers
         rospy.Subscriber('/mavros/state', State, self.state_callback)
         rospy.Subscriber('/mavros/local_position/pose', PoseStamped, self.pose_callback)
 
-        # Публикатор
+        # Publisher
         self.setpoint_pub = rospy.Publisher('/mavros/setpoint_position/local', PoseStamped, queue_size=10)
 
-        # Клиенты сервисов MAVROS
-        rospy.loginfo("Ожидание сервисов MAVROS...")
+        # MAVROS Service Clients
+        rospy.loginfo("Waiting for MAVROS services...")
         rospy.wait_for_service('/mavros/cmd/arming')
         self.arm_service = rospy.ServiceProxy('/mavros/cmd/arming', CommandBool)
         
@@ -57,11 +57,11 @@ class DroneController:
 
         rospy.wait_for_service('/mavros/cmd/land')
         self.land_service = rospy.ServiceProxy('/mavros/cmd/land', CommandTOL)
-        rospy.loginfo("Сервисы MAVROS подключены.")
+        rospy.loginfo("MAVROS services connected.")
 
-        # MVP: Сервис светодиодов пропущен
+        # MVP: LED service is skipped
 
-        # --- 3. Подготовка к полету ---
+        # --- 3. Prepare for flight ---
         self.prepare_flight()
 
     def state_callback(self, msg):
@@ -71,7 +71,7 @@ class DroneController:
         self.current_pose = msg
 
     def is_at_position(self, target_coords, tolerance=0.3):
-        """Проверяет, достиг ли дрон цели с допуском."""
+        """Checks if the drone has reached the target with a tolerance."""
         if self.current_pose is None:
             return False
         
@@ -84,7 +84,7 @@ class DroneController:
         return dist < tolerance
 
     def go_to_point(self, point_name):
-        """Летит к точке по ее имени и ждет ее достижения."""
+        """Flies to a point by its name and waits for arrival."""
         target_coords = self.coordinates[point_name]
         pose = PoseStamped()
         pose.header.stamp = rospy.Time.now()
@@ -92,77 +92,76 @@ class DroneController:
         pose.pose.position.y = target_coords[1]
         pose.pose.position.z = target_coords[2]
         
-        rospy.loginfo(f"Движение к {point_name} {target_coords}...")
+        rospy.loginfo(f"Moving to {point_name} {target_coords}...")
         
         while not rospy.is_shutdown():
             if self.is_at_position(target_coords):
                 break
                 
             if (self.current_state and self.current_state.mode != "OFFBOARD"):
-                rospy.logwarn("Режим OFFBOARD потерян! Попытка восстановления...")
-                self.set_mode_service(custom_mode="OFFBOARD")
+                rospy.logwarn("OFFBOARD mode lost! Attempting to recover...")
                 
             self.setpoint_pub.publish(pose)
             self.rate.sleep()
         
-        rospy.loginfo(f"Прибытие в {point_name}.")
+        rospy.loginfo(f"Arrived at {point_name}.")
 
     def prepare_flight(self):
-        """Взлет и переход в OFFBOARD."""
-        rospy.loginfo("Подготовка к полету...")
+        """Takeoff and switch to OFFBOARD."""
+        rospy.loginfo("Preparing for flight...")
         
-        # Ждем подключения к FCU
+        # Wait for connection to FCU
         while not self.current_state and not rospy.is_shutdown():
-            rospy.logwarn("Ожидание подключения к MAVROS...")
+            rospy.logwarn("Waiting for MAVROS connection...")
             self.rate.sleep()
             
-        # "Прогреваем" поток setpoints, это требование MAVROS
+        # "Warm up" the setpoint stream, this is a MAVROS requirement
         pose = PoseStamped()
-        pose.pose.position.z = 1.0 # Стартовая высота 
+        pose.pose.position.z = 1.0 # Start altitude
         for _ in range(100):
             self.setpoint_pub.publish(pose)
             self.rate.sleep()
             
-        # Включаем OFFBOARD
-        rospy.loginfo("Включение режима OFFBOARD...")
+        # Enable OFFBOARD
+        rospy.loginfo("Enabling OFFBOARD mode...")
         self.set_mode_service(custom_mode="OFFBOARD")
         
-        # Армим дрон
-        rospy.loginfo("Арминг...")
+        # Arm the drone
+        rospy.loginfo("Arming...")
         self.arm_service(True)
         
-        # Ждем стабилизации на (0,0,1)
+        # Wait for stabilization at (0,0,1)
         self.go_to_point('0')
-        rospy.loginfo("Готов к миссии. (Отсчет времени начинается)")
+        rospy.loginfo("Ready for mission. (Timer starts now)")
 
     def run_mission(self):
-        """Выполняет полет по заданному маршруту."""
+        """Executes the flight plan."""
         
         for point_name in self.route_plan:
-            # Летим к следующей точке
+            # Fly to the next point
             self.go_to_point(point_name)
             
-            # Выполняем обязательное действие в точке
+            # Perform the mandatory action at the point
             if point_name in self.pickup_points:
-                # "Захват"
-                rospy.loginfo(f"Имитация захвата в {point_name} (3 сек)...")
-                rospy.sleep(3.0) # Обязательное зависание 
+                # "Pickup"
+                rospy.loginfo(f"Simulating pickup at {point_name} (3 sec)...")
+                rospy.sleep(3.0) # Mandatory hover
             
             elif point_name in self.dropoff_points:
-                # "Разгрузка"
-                rospy.loginfo(f"Имитация разгрузки в {point_name} (3 сек)...")
-                rospy.sleep(3.0) # Обязательное зависание 
+                # "Dropoff"
+                rospy.loginfo(f"Simulating dropoff at {point_name} (3 sec)...")
+                rospy.sleep(3.0) # Mandatory hover
         
-        # --- Завершение миссии ---
-        rospy.loginfo("Миссия выполнена. Возвращение на базу...")
-        self.go_to_point('0') # Возврат в (0,0,1) 
+        # --- Mission Completion ---
+        rospy.loginfo("Mission complete. Returning to base...")
+        self.go_to_point('0') # Return to (0,0,1)
         
-        rospy.loginfo("Стабилизация на базе... (Окончание времени)")
+        rospy.loginfo("Stabilizing at base... (Timer stops)")
         
-        rospy.loginfo("Выполнение посадки...")
-        self.land_service(altitude=0, latitude=0, longitude=0, min_pitch=0) # Посадка 
-        rospy.sleep(5) # Даем время на посадку
-        rospy.loginfo("Миссия завершена.")
+        rospy.loginfo("Executing land...")
+        self.land_service(altitude=0, latitude=0, longitude=0, min_pitch=0) # Land
+        rospy.sleep(5) # Give it time to land
+        rospy.loginfo("Mission finished.")
 
 
 if __name__ == '__main__':
