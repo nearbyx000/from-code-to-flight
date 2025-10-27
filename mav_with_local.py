@@ -107,33 +107,50 @@ class DroneController:
         rospy.loginfo(f"Arrived at {point_name}.")
 
     def prepare_flight(self):
-        """Takeoff and switch to OFFBOARD."""
         rospy.loginfo("Preparing for flight...")
         
-        # Wait for connection to FCU
+        # Wait for FCU connection
         while not self.current_state and not rospy.is_shutdown():
             rospy.logwarn("Waiting for MAVROS connection...")
             self.rate.sleep()
             
-        # "Warm up" the setpoint stream, this is a MAVROS requirement
+        # "Warm up" the setpoint stream
         pose = PoseStamped()
         pose.pose.position.z = 1.0 # Start altitude
         for _ in range(100):
             self.setpoint_pub.publish(pose)
             self.rate.sleep()
             
-        # Enable OFFBOARD
-        rospy.loginfo("Enabling OFFBOARD mode...")
-        self.set_mode_service(custom_mode="OFFBOARD")
-        
-        # Arm the drone
-        rospy.loginfo("Arming...")
-        self.arm_service(True)
+        rospy.loginfo("Attempting to enable OFFBOARD mode...")
+        last_request_time = rospy.Time.now()
+
+        # Loop until OFFBOARD mode is confirmed
+        while self.current_state.mode != "OFFBOARD" and not rospy.is_shutdown():
+            # Request mode switch every 5 seconds
+            if rospy.Time.now() - last_request_time > rospy.Duration(5.0):
+                rospy.loginfo("Requesting OFFBOARD mode...")
+                self.set_mode_service(custom_mode="OFFBOARD")
+                last_request_time = rospy.Time.now()
+            
+            # Keep streaming setpoints while we wait
+            self.setpoint_pub.publish(pose)
+            self.rate.sleep()
+
+        rospy.loginfo("OFFBOARD mode enabled.")
+
+        # Loop until ARMED is confirmed
+        rospy.loginfo("Attempting to arm...")
+        while not self.current_state.armed and not rospy.is_shutdown():
+            rospy.loginfo("Sending arm command...")
+            self.arm_service(True)
+            self.rate.sleep()
+            
+        rospy.loginfo("Vehicle armed.")
         
         # Wait for stabilization at (0,0,1)
         self.go_to_point('0')
         rospy.loginfo("Ready for mission. (Timer starts now)")
-
+        
     def run_mission(self):
         """Executes the flight plan."""
         
