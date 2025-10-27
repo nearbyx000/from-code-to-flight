@@ -1,16 +1,36 @@
+#!/usr/bin/env python3
 import asyncio
 from mavsdk import System
+from mavsdk.action import ActionError
 from mavsdk.offboard import (OffboardError, PositionNedYaw)
 
-# Ваши точки из Gazebo (X, Y, Z)
-# X=вперед, Y=влево, Z=вверх
-gazebo_points = [
-    (10.0, 0.0, 5.0),   # 10м вперед, 0м вбок, 5м вверх
-    (10.0, 10.0, 5.0),  # 10м вперед, 10м влево, 5м вверх
-    (0.0, 10.0, 5.0)    # 0м вперед, 10м влево, 5м вверх
-]
+# --- Ваши точки (X=вперед, Y=влево) ---
+points_dict = {
+    'Н': (0.0, 0.0),
+    'А': (2.5, 1.0),
+    'В': (6.5, 1.0),
+    '1': (0.5, 3.0),
+    '2': (7.5, 9.0),
+    '3': (0.5, 8.0),
+    '4': (7.5, 4.5),
+    '5': (4.5, 5.5)
+}
 
-# Конвертируем Gazebo (X, Y, Z) в MAVSDK NED (North, East, Down)
+# --- Ваш новый маршрут ---
+# (Точка 'Н' - это старт, поэтому мы ее не включаем в список целей)
+route_keys = ['1', 'В', '5', 'В', '2', 'В', '4', 'А', '3', 'А']
+
+# --- Настройки полета ---
+FLYING_ALTITUDE = 5.0 # (метры) - высота полета
+
+# 1. Собираем список координат (X, Y, Z) для Gazebo
+gazebo_points = []
+for key in route_keys:
+    point_xy = points_dict.get(key)
+    if point_xy:
+        gazebo_points.append((point_xy[0], point_xy[1], FLYING_ALTITUDE))
+
+# 2. Конвертируем Gazebo (X, Y, Z) в MAVSDK NED (North, East, Down)
 # N = X, E = -Y, D = -Z
 ned_points = [
     PositionNedYaw(p[0], -p[1], -p[2], 0.0) for p in gazebo_points
@@ -35,22 +55,35 @@ async def run_mission():
         if health.is_global_position_ok and health.is_home_position_ok:
             print("Позиция GPS установлена.")
             break
-            
+    
+    # --- ВАЖНО: ПРОВЕРКА ОШИБОК ARM ---
     print("-- Арминг (взвод моторов)")
-    await drone.action.arm()
-    await asyncio.sleep(1) # Даем время на арминг
+    try:
+        await drone.action.arm()
+    except ActionError as e:
+        print(f"!!! ОШИБКА ARM: {e}")
+        print("!!! Завершение скрипта.")
+        return # Выходим из миссии
 
-    # Взлет на целевую высоту (в нашем случае, первая точка)
-    target_altitude = -ned_points[0].down_m  # D = -Z, поэтому -D = Z
-    print(f"-- Взлет на {target_altitude} м")
-    await drone.action.set_takeoff_altitude(target_altitude)
-    await drone.action.takeoff()
-    await asyncio.sleep(10) # Даем время на взлет
+    await asyncio.sleep(1) 
+    target_altitude_ned = ned_points[0].down_m # Берем высоту из первой точки
+
+    # --- ВАЖНО: ПРОВЕРКА ОШИБОК TAKEOFF ---
+    print(f"-- Взлет на {-target_altitude_ned} м")
+    try:
+        await drone.action.set_takeoff_altitude(-target_altitude_ned)
+        await drone.action.takeoff()
+    except ActionError as e:
+        print(f"!!! ОШИБКА TAKEOFF: {e}")
+        print("!!! Завершение скрипта.")
+        return # Выходим из миссии
+
+    # Даем дрону время набрать высоту
+    await asyncio.sleep(10) 
 
     print("-- Запуск режима Offboard")
-    # Устанавливаем начальную точку для Offboard
-    await drone.offboard.set_position_ned(PositionNedYaw(0.0, 0.0, 0.0, 0.0))
     try:
+        await drone.offboard.set_position_ned(PositionNedYaw(0.0, 0.0, target_altitude_ned, 0.0))
         await drone.offboard.start()
     except OffboardError as error:
         print(f"Не удалось запустить Offboard: {error}")
@@ -59,9 +92,15 @@ async def run_mission():
 
     # --- Начинаем полет по точкам ---
     for i, point in enumerate(ned_points):
-        print(f"-- Летим в точку {i+1}: N:{point.north_m} E:{point.east_m} D:{point.down_m}")
+        print(f"-- Летим в точку {i+1}/{len(ned_points)} (Маршрут: {route_keys[i]})")
+        print(f"   Координаты: N:{point.north_m} E:{point.east_m} D:{point.down_m}")
+        
         await drone.offboard.set_position_ned(point)
-        await asyncio.sleep(8) # Время на полет до точки
+        
+        # Ждем 4 секунды. Это МЕНЬШЕ 5-секундного таймаута Offboard.
+        # Дрон может не успеть долететь до точки, но он будет 
+        # непрерывно двигаться к СЛЕДУЮЩЕЙ точке.
+        await asyncio.sleep(4) 
 
     print("-- Миссия завершена, остановка Offboard")
     try:
