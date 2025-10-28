@@ -25,7 +25,7 @@ class DroneController:
             '5': (4.5, 5.5, 1.0)
         }
         
-        # === ИЗМЕНЕНО: Новый маршрут, который вы предоставили ===
+        # Оптимальный маршрут, который вы предоставили
         self.route_plan = [
             'A', '3',  # Доставка 1 (A -> 3)
             'A', '4',  # Доставка 2 (A -> 4)
@@ -90,7 +90,7 @@ class DroneController:
     def pose_callback(self, msg):
         self.current_pose = msg
 
-    def is_at_position(self, target_coords, tolerance=0.15): # Допуск 15 см для точности
+    def is_at_position(self, target_coords, tolerance=0.12): # <-- ИЗМЕНЕНО: Точность 12 см
         """Checks if the drone has reached the target with a tolerance."""
         if self.current_pose is None:
             return False
@@ -108,7 +108,7 @@ class DroneController:
         target_coords = self.coordinates[point_name]
         pose = PoseStamped()
         pose.header.stamp = rospy.Time.now()
-        pose.header.frame_id = "map" # Добавим frame_id для надежности
+        pose.header.frame_id = "map"
         pose.pose.position.x = target_coords[0]
         pose.pose.position.y = target_coords[1]
         pose.pose.position.z = target_coords[2]
@@ -128,8 +128,8 @@ class DroneController:
         
         rospy.loginfo(f"Arrived at {point_name}. Stabilizing...")
 
-        # Цикл стабилизации (0.5 сек для экономии времени)
-        for _ in range(10): 
+        # Цикл стабилизации
+        for _ in range(25): # <-- ИЗМЕНЕНО: 25 циклов (1.25 сек)
             if rospy.is_shutdown():
                 break
             self.setpoint_pub.publish(pose)
