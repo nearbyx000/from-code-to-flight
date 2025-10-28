@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/-bin/env python
 # -*- coding: utf-8 -*-
 
 import rospy
@@ -141,7 +141,7 @@ class DroneController:
         """Reliable loop to take off and switch to OFFBOARD."""
         rospy.loginfo("Preparing for flight...")
         
-        # === ИЗМЕНЕНО: Ждем и MAVROS (self.current_state) И позицию (self.current_pose) ===
+        # Ждем и MAVROS (self.current_state) И позицию (self.current_pose)
         while (self.current_state is None or self.current_pose is None) and not rospy.is_shutdown():
             rospy.logwarn("Waiting for MAVROS connection AND position estimate (from aruco)...")
             self.rate.sleep()
@@ -149,6 +149,7 @@ class DroneController:
         
         # "Прогрев" потока setpoints
         pose = PoseStamped()
+        pose.header.frame_id = "map"
         pose.pose.position.z = 1.0
         for _ in range(100):
             if rospy.is_shutdown():
@@ -176,6 +177,11 @@ class DroneController:
         while not rospy.is_shutdown() and not self.current_state.armed:
             rospy.loginfo("Sending arm command...")
             self.arm_service(True)
+            
+            # === ИСПРАВЛЕНИЕ: Мы ДОЛЖНЫ продолжать публиковать setpoints, пока армимся ===
+            self.setpoint_pub.publish(pose)
+            # =========================================================================
+            
             self.rate.sleep()
             
         rospy.loginfo("Vehicle armed.")
