@@ -90,7 +90,7 @@ class DroneController:
     def pose_callback(self, msg):
         self.current_pose = msg
 
-    def is_at_position(self, target_coords, tolerance=0.12): # <-- ИЗМЕНЕНО: Точность 12 см
+    def is_at_position(self, target_coords, tolerance=0.12): # Точность 12 см
         """Checks if the drone has reached the target with a tolerance."""
         if self.current_pose is None:
             return False
@@ -129,7 +129,7 @@ class DroneController:
         rospy.loginfo(f"Arrived at {point_name}. Stabilizing...")
 
         # Цикл стабилизации
-        for _ in range(25): # <-- ИЗМЕНЕНО: 25 циклов (1.25 сек)
+        for _ in range(25): # 25 циклов (1.25 сек)
             if rospy.is_shutdown():
                 break
             self.setpoint_pub.publish(pose)
@@ -211,12 +211,26 @@ class DroneController:
         # --- Завершение миссии ---
         if not rospy.is_shutdown():
             rospy.loginfo("Mission complete. Returning to base...")
-            self.go_to_point('0')
+            self.go_to_point('0') # Выполняем стандартную 1.25-сек стабилизацию
             
             rospy.loginfo("--- LED: TURNING OFF (Final) ---") # Имитация LED
-
             rospy.loginfo("Stabilizing at base... (Timer stops)")
+
+            # === НОВЫЙ БЛОК: Принудительная калибровка перед посадкой ===
+            rospy.loginfo("Holding position for final landing calibration (3 sec)...")
+            final_pose = PoseStamped()
+            final_pose.header.frame_id = "map"
+            final_pose.pose.position.x = 0.0
+            final_pose.pose.position.y = 0.0
+            final_pose.pose.position.z = 1.0
             
+            # 3 секунды * 20 Гц = 60 циклов удержания
+            for _ in range(60): 
+                if rospy.is_shutdown(): break
+                self.setpoint_pub.publish(final_pose)
+                self.rate.sleep()
+            # =========================================================
+
             rospy.loginfo("Executing land...")
             self.land_service(altitude=0, latitude=0, longitude=0, min_pitch=0)
             rospy.sleep(5)
