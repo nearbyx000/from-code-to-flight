@@ -39,7 +39,7 @@ class DroneController:
         
         # --- 2. Настройка ROS ---
         self.current_state = None
-        self.current_pose = None
+        self.current_pose = None # Сюда будут приходить данные о позиции
         self.rate = rospy.Rate(20.0) # 20 Гц
 
         # Подписчики
@@ -88,7 +88,7 @@ class DroneController:
         self.current_state = msg
 
     def pose_callback(self, msg):
-        self.current_pose = msg
+        self.current_pose = msg # Сохраняем позицию
 
     def is_at_position(self, target_coords, tolerance=0.12): # Точность 12 см
         """Checks if the drone has reached the target with a tolerance."""
@@ -141,10 +141,12 @@ class DroneController:
         """Reliable loop to take off and switch to OFFBOARD."""
         rospy.loginfo("Preparing for flight...")
         
-        while not self.current_state and not rospy.is_shutdown():
-            rospy.logwarn("Waiting for MAVROS connection...")
+        # === ИЗМЕНЕНО: Ждем и MAVROS (self.current_state) И позицию (self.current_pose) ===
+        while (self.current_state is None or self.current_pose is None) and not rospy.is_shutdown():
+            rospy.logwarn("Waiting for MAVROS connection AND position estimate (from aruco)...")
             self.rate.sleep()
-            
+        rospy.loginfo("MAVROS connection and position estimate are READY.")
+        
         # "Прогрев" потока setpoints
         pose = PoseStamped()
         pose.pose.position.z = 1.0
@@ -178,6 +180,7 @@ class DroneController:
             
         rospy.loginfo("Vehicle armed.")
         
+        # Команда на взлет (достижение точки (0,0,1))
         self.go_to_point('0')
         rospy.loginfo("Ready for mission. (Timer starts now)")
 
@@ -211,12 +214,12 @@ class DroneController:
         # --- Завершение миссии ---
         if not rospy.is_shutdown():
             rospy.loginfo("Mission complete. Returning to base...")
-            self.go_to_point('0') # Выполняем стандартную 1.25-сек стабилизацию
+            self.go_to_point('0') # Стандартная 1.25-сек стабилизация
             
             rospy.loginfo("--- LED: TURNING OFF (Final) ---") # Имитация LED
             rospy.loginfo("Stabilizing at base... (Timer stops)")
 
-            # === НОВЫЙ БЛОК: Принудительная калибровка перед посадкой ===
+            # Принудительная калибровка перед посадкой
             rospy.loginfo("Holding position for final landing calibration (3 sec)...")
             final_pose = PoseStamped()
             final_pose.header.frame_id = "map"
