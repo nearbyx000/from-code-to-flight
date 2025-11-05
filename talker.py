@@ -73,48 +73,41 @@ def get_llm_response(user_prompt: str) -> str:
 
 def speak_text(text: str):
     """
-    Озвучивает текст, используя Piper TTS, и напрямую передает аудио в 'aplay'.
+    Озвучивает текст, используя espeak-ng, и напрямую передает аудио в 'aplay'.
     """
     if not text:
         print("[TTS] Нечего озвучивать.", file=sys.stderr)
         return
 
-    print("[TTS]... Генерация речи ...")
+    print("[TTS]... Генерация речи (espeak-ng) ...")
     try:
-        # Команда для Piper (генерация аудио в stdout)
-        piper_cmd = [
-            'piper',
-            '--model', PIPER_MODEL_PATH,
-            '--output-raw'
-        ]
-        
-        # Команда для aplay (чтение аудио из stdin)
-        # 22050 Hz - это стандартная частота для 'medium' моделей Piper
-        aplay_cmd = [
-            'aplay',
-            '-r', '22050',  # Sample Rate
-            '-f', 'S16_LE', # Format (16-bit Signed Little-Endian)
-            '-t', 'raw',
-            '-' # Читать из stdin
+        # Команда для espeak-ng (русский язык, вывод в stdout)
+        espeak_cmd = [
+            'espeak-ng',
+            '-v', 'ru',  # Использовать русский голос
+            '-s', '160', # Скорость (слова в минуту)
+            '--stdout'   # Выводить WAV в stdout
         ]
 
-        # Запускаем Piper
-        p_piper = subprocess.Popen(piper_cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE)
-        
-        # Запускаем aplay, который "слушает" вывод Piper
-        p_aplay = subprocess.Popen(aplay_cmd, stdin=p_piper.stdout)
-        
-        # Передаем текст в Piper и ждем завершения
-        p_piper.communicate(input=text.encode('utf-8'))
-        
+        # Команда aplay (читает WAV из stdin)
+        aplay_cmd = ['aplay', '-t', 'wav', '-']
+
+        # Запускаем espeak
+        p_espeak = subprocess.Popen(espeak_cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+
+        # Запускаем aplay, который "слушает" вывод espeak
+        p_aplay = subprocess.Popen(aplay_cmd, stdin=p_espeak.stdout)
+
+        # Передаем текст в espeak и ждем завершения
+        p_espeak.communicate(input=text.encode('utf-8'))
+
         # Ждем завершения aplay
         p_aplay.wait()
 
     except FileNotFoundError:
-        print("[Ошибка] 'piper' или 'aplay' не найдены.", file=sys.stderr)
+        print("[Ошибка] 'espeak-ng' или 'aplay' не найдены.", file=sys.stderr)
     except Exception as e:
         print(f"[Ошибка] Не удалось озвучить текст: {e}", file=sys.stderr)
-
 def main():
     """
     Главный цикл диалога.
