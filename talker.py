@@ -71,6 +71,7 @@ def get_llm_response(user_prompt: str) -> str:
         return "Неизвестная ошибка."
 
 
+# --- ЗАМЕНИТЕ ВАШУ ФУНКЦИЮ 'speak_text' НА ЭТУ ---
 def speak_text(text: str):
     """
     Озвучивает текст, используя espeak-ng, и напрямую передает аудио в 'aplay'.
@@ -81,26 +82,28 @@ def speak_text(text: str):
 
     print("[TTS]... Генерация речи (espeak-ng) ...")
     try:
-        # Команда для espeak-ng (русский язык, вывод в stdout)
+        # -v ru  : использовать русский голос
+        # -s 160 : скорость (160 слов в минуту)
+        # --stdout: выводить WAV в stdout
         espeak_cmd = [
             'espeak-ng',
-            '-v', 'ru',  # Использовать русский голос
-            '-s', '160', # Скорость (слова в минуту)
-            '--stdout'   # Выводить WAV в stdout
+            '-v', 'ru',
+            '-s', '160',
+            '--stdout'
         ]
-
-        # Команда aplay (читает WAV из stdin)
-        aplay_cmd = ['aplay', '-t', 'wav', '-']
+        
+        # aplay читает WAV из stdin
+        aplay_cmd = ['aplay', '-q', '-t', 'wav', '-']
 
         # Запускаем espeak
         p_espeak = subprocess.Popen(espeak_cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE)
-
+        
         # Запускаем aplay, который "слушает" вывод espeak
         p_aplay = subprocess.Popen(aplay_cmd, stdin=p_espeak.stdout)
-
-        # Передаем текст в espeak и ждем завершения
+        
+        # Передаем текст в espeak
         p_espeak.communicate(input=text.encode('utf-8'))
-
+        
         # Ждем завершения aplay
         p_aplay.wait()
 
